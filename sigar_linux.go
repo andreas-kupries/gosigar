@@ -19,11 +19,21 @@ var system struct {
 }
 
 var Procd string
+var SysMemd string
+
+// Files in system directories used here
+//   - Procd
+//       - /stat
+//       - /meminfo
+//   - SysMemd
+//       - /memory.limit_in_bytes
+//       - /memory.stat
 
 func init() {
 	system.ticks = 100 // C.sysconf(C._SC_CLK_TCK)
 
 	Procd = "/proc"
+	SysMemd = "/sys/fs/cgroup/memory"
 
 	// grab system boot time
 	readFile(Procd+"/stat", func(line string) bool {
@@ -88,76 +98,51 @@ func (self *Mem) Get() error {
 
 	// Instead of detecting if this code is run within a container
 	// or not (*), we simply attempt to retrieve the cgroup
-	// information about memory limits and if present incorporate
-	// them into the results. We are taking the smaller of host
-	// total and limit, as the safer value. If the limit is not
-	// available we ignore it and stay with the host data.
+	// information about memory limits and usage and if present
+	// incorporate them into the results.
+	//
+	// 1. If the cgroup limit is not available we ignore it and
+	//    stay with the host data.
+	//
+	// 2. Note that we are taking the smaller of host total and
+	//    cgroup limit, as the safer value for the total. The
+	//    reason here is that there are Linux systems which report
+	//    something like 8 EiB (Exa!) as the cgroup limit, on
+	//    systems which have only 64 GiB (Giga) of physical RAM.
 	//
 	// (*) There does not seem to be a truly reliable and portable
-	// means of detecting execution inside a container vs
-	// outside. Between all the platforms (macos, linux, windows),
-	// and container runtimes (docker, lxc, oci, ...).
+	//     means of detecting execution inside a container vs
+	//     outside. Between all the platforms (macos, linux,
+	//     windows), and container runtimes (docker, lxc, oci, ...).
 
-	mlib_string, err := ioutil.ReadFile("/sys/fs/cgroup/memory/memory.limit_in_bytes")
+	cgroupLimitAsString, err := ioutil.ReadFile(SysMemd + "/memory.limit_in_bytes")
 	if err != nil {
-		// Limit not available or not accessible. Keep to host data.
+		// The limit is not available or not accessible. Keep the host data.
 		return nil
 	}
 
-	mlib_value, err := strtoull(strings.Split(string(mlib_string),"\n")[0])
-	if err != nil {
-		// Limit is not a proper number. Keep to host data.
+	cgroupLimit, err := strtoull(strings.Split(string(cgroupLimitAsString), "\n")[0])
+	if err == nil && cgroupLimit < self.Total {
+		// See (2) above why only a cgroup limit less than the
+		// host total is accepted as the new total available
+		// memory in the cgroup.
+		self.Total = cgroupLimit
+	}
+
+	var rss, swap uint64
+	table = map[string]*uint64{
+		"swap":      &swap,
+		"total_rss": &rss,
+	}
+
+	if err := parseCgroupMeminfo(table); err != nil {
 		return nil
 	}
 
-	if mlib_value > self.Total {
-		// Reject limits larger as what the host reports as
-		// available memory.
-		return nil
-	}
+	self.Used = rss + swap
+	self.Free = self.Total - self.Used
 
-	// Reduce the total to the limit, and update how much is
-	// used. As the numbers about free memory are still host based
-	// we may see more free than we should have. In that case we
-	// limit usage to the total.
-
-	self.Total = mlib_value;
-
-	if self.Total < self.Free {
-		self.Used = self.Total
-	} else {
-		self.Used = self.Total - self.Free
-	}
-	if self.Total < self.ActualFree {
-		self.ActualUsed = self.Total
-	} else {
-		self.ActualUsed = self.Total - self.ActualFree
-	}
-
-	// Now we check if we have cgroup based usage information as
-	// well.  Remember that at this point we already know that a
-	// cgroup limit was available, and less than the host total.
-	//
-	// We can use the cgroup usage data as-is, and recompute the
-	// free space without fear as well, as usage will be below the
-	// limit.
-
-	muib_string, err := ioutil.ReadFile("/sys/fs/cgroup/memory/memory.usage_in_bytes")
-	if err != nil {
-		// Usage not available or not accessible. Keep what we have.
-		return nil
-	}
-
-	muib_value, err := strtoull(strings.Split(string(muib_string),"\n")[0])
-	if err != nil {
-		// Usage is not a proper number. Keep what we have.
-		return nil
-	}
-
-	self.Used = muib_value
 	self.ActualUsed = self.Used
-
-	self.Free = self.Total - muib_value
 	self.ActualFree = self.Free
 
 	return nil
@@ -399,6 +384,21 @@ func parseMeminfo(table map[string]*uint64) error {
 			val, err := strtoull(strings.Fields(num)[0])
 			if err == nil {
 				*ptr = val * 1024
+			}
+		}
+
+		return true
+	})
+}
+
+func parseCgroupMeminfo(table map[string]*uint64) error {
+	return readFile(Procd+"/memory.stat", func(line string) bool {
+		fields := strings.Split(line, " ")
+		if ptr := table[fields[0]]; ptr != nil {
+			num := strings.TrimLeft(fields[1], " ")
+			val, err := strtoull(strings.Fields(num)[0])
+			if err == nil {
+				*ptr = val
 			}
 		}
 

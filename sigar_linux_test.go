@@ -16,10 +16,12 @@ var _ = Describe("sigarLinux", func() {
 		procd, err = ioutil.TempDir("", "sigarTests")
 		Expect(err).ToNot(HaveOccurred())
 		Procd = procd
+		SysMemd = procd // Can share the directory, no overlap in files used
 	})
 
 	AfterEach(func() {
 		Procd = "/proc"
+		SysMemd = "/sys/fs/cgroup/memory"
 	})
 
 	Describe("CPU", func() {
@@ -225,6 +227,346 @@ DirectMap2M:    34983936 kB
 			Expect(mem.Free).To(BeNumerically("==", 487816*1024))
 			Expect(mem.ActualFree).To(BeNumerically("==", 20913400*1024))
 			Expect(mem.ActualUsed).To(BeNumerically("==", 14094780*1024))
+		})
+	})
+
+	// Three toggles:
+	// - MemAvailable     present        yes/no
+	// - Cgroup limit     valid&sensible yes/no
+	// - Cgroup swap data present        yes/no
+	//
+	// This makes for 8 tests.
+	//
+	// Note that `MemAvailable present yes/no` does not matter in
+	// the results, as the cgroup derived results will write over
+	// them. Thus we have 2 groups a 4 tests, with identical
+	// results for the equivalent tests of each group.
+
+	Describe("Mem: MemAvailable yes. Cgroup limit ok. Cgroup swap yes", func() {
+		var meminfoFile string
+		var memstatFile string
+		var memlimitFile string
+		BeforeEach(func() {
+			meminfoFile = procd + "/meminfo"
+			memstatFile = procd + "/memory.stat"
+			memlimitFile = procd + "/memory.limit_in_bytes"
+
+			meminfoContents := `
+MemTotal:       35008180 kB
+MemFree:          487816 kB
+MemAvailable:   20913400 kB
+Buffers:          249244 kB
+Cached:          5064684 kB
+`
+			memstatContents := `
+total_rss 14108536832
+swap 290564089
+`
+			memlimitContents := `21390950400`
+
+			err := ioutil.WriteFile(meminfoFile, []byte(meminfoContents), 0444)
+			Expect(err).ToNot(HaveOccurred())
+			err = ioutil.WriteFile(memstatFile, []byte(memstatContents), 0444)
+			Expect(err).ToNot(HaveOccurred())
+			err = ioutil.WriteFile(memlimitFile, []byte(memlimitContents), 0444)
+			Expect(err).ToNot(HaveOccurred())
+		})
+
+		It("returns correct memory info", func() {
+			mem := Mem{}
+			err := mem.Get()
+			Expect(err).ToNot(HaveOccurred())
+
+			Expect(mem.Total).To(BeNumerically("==", 21390950400))
+			Expect(mem.Free).To(BeNumerically("==", 21390950400-14108536832-290564089))
+			Expect(mem.ActualFree).To(BeNumerically("==", 21390950400-14108536832-290564089))
+			Expect(mem.ActualUsed).To(BeNumerically("==", 14108536832+290564089))
+		})
+	})
+
+	Describe("Mem: MemAvailable yes. Cgroup limit ok. Cgroup swap no", func() {
+		var meminfoFile string
+		var memstatFile string
+		var memlimitFile string
+		BeforeEach(func() {
+			meminfoFile = procd + "/meminfo"
+			memstatFile = procd + "/memory.stat"
+			memlimitFile = procd + "/memory.limit_in_bytes"
+
+			meminfoContents := `
+MemTotal:       35008180 kB
+MemFree:          487816 kB
+MemAvailable:   20913400 kB
+Buffers:          249244 kB
+Cached:          5064684 kB
+`
+			memstatContents := `
+total_rss 14108536832
+`
+			memlimitContents := `21390950400`
+
+			err := ioutil.WriteFile(meminfoFile, []byte(meminfoContents), 0444)
+			Expect(err).ToNot(HaveOccurred())
+			err = ioutil.WriteFile(memstatFile, []byte(memstatContents), 0444)
+			Expect(err).ToNot(HaveOccurred())
+			err = ioutil.WriteFile(memlimitFile, []byte(memlimitContents), 0444)
+			Expect(err).ToNot(HaveOccurred())
+		})
+
+		It("returns correct memory info", func() {
+			mem := Mem{}
+			err := mem.Get()
+			Expect(err).ToNot(HaveOccurred())
+
+			Expect(mem.Total).To(BeNumerically("==", 21390950400))
+			Expect(mem.Free).To(BeNumerically("==", 21390950400-14108536832))
+			Expect(mem.ActualFree).To(BeNumerically("==", 21390950400-14108536832))
+			Expect(mem.ActualUsed).To(BeNumerically("==", 14108536832))
+		})
+	})
+
+	Describe("Mem: MemAvailable yes. Cgroup limit nonsense. Cgroup swap yes", func() {
+		var meminfoFile string
+		var memstatFile string
+		var memlimitFile string
+		BeforeEach(func() {
+			meminfoFile = procd + "/meminfo"
+			memstatFile = procd + "/memory.stat"
+			memlimitFile = procd + "/memory.limit_in_bytes"
+
+			meminfoContents := `
+MemTotal:       35008180 kB
+MemFree:          487816 kB
+MemAvailable:   20913400 kB
+Buffers:          249244 kB
+Cached:          5064684 kB
+`
+			memstatContents := `
+total_rss 14108536832
+swap 290564089
+`
+			memlimitContents := `213909504000000000000`
+
+			err := ioutil.WriteFile(meminfoFile, []byte(meminfoContents), 0444)
+			Expect(err).ToNot(HaveOccurred())
+			err = ioutil.WriteFile(memstatFile, []byte(memstatContents), 0444)
+			Expect(err).ToNot(HaveOccurred())
+			err = ioutil.WriteFile(memlimitFile, []byte(memlimitContents), 0444)
+			Expect(err).ToNot(HaveOccurred())
+		})
+
+		It("returns correct memory info", func() {
+			mem := Mem{}
+			err := mem.Get()
+			Expect(err).ToNot(HaveOccurred())
+
+			Expect(mem.Total).To(BeNumerically("==", 35008180*1024))
+			Expect(mem.Free).To(BeNumerically("==", 35008180*1024-14108536832-290564089))
+			Expect(mem.ActualFree).To(BeNumerically("==", 35008180*1024-14108536832-290564089))
+			Expect(mem.ActualUsed).To(BeNumerically("==", 14108536832+290564089))
+		})
+	})
+
+	Describe("Mem: MemAvailable yes. Cgroup limit nonsense. Cgroup swap no", func() {
+		var meminfoFile string
+		var memstatFile string
+		var memlimitFile string
+		BeforeEach(func() {
+			meminfoFile = procd + "/meminfo"
+			memstatFile = procd + "/memory.stat"
+			memlimitFile = procd + "/memory.limit_in_bytes"
+
+			meminfoContents := `
+MemTotal:       35008180 kB
+MemFree:          487816 kB
+MemAvailable:   20913400 kB
+Buffers:          249244 kB
+Cached:          5064684 kB
+`
+			memstatContents := `
+total_rss 14108536832
+`
+			memlimitContents := `213909504000000000000`
+
+			err := ioutil.WriteFile(meminfoFile, []byte(meminfoContents), 0444)
+			Expect(err).ToNot(HaveOccurred())
+			err = ioutil.WriteFile(memstatFile, []byte(memstatContents), 0444)
+			Expect(err).ToNot(HaveOccurred())
+			err = ioutil.WriteFile(memlimitFile, []byte(memlimitContents), 0444)
+			Expect(err).ToNot(HaveOccurred())
+		})
+
+		It("returns correct memory info", func() {
+			mem := Mem{}
+			err := mem.Get()
+			Expect(err).ToNot(HaveOccurred())
+
+			Expect(mem.Total).To(BeNumerically("==", 35008180*1024))
+			Expect(mem.Free).To(BeNumerically("==", 35008180*1024-14108536832))
+			Expect(mem.ActualFree).To(BeNumerically("==", 35008180*1024-14108536832))
+			Expect(mem.ActualUsed).To(BeNumerically("==", 14108536832))
+		})
+	})
+
+	Describe("Mem: MemAvailable no. Cgroup limit ok. Cgroup swap yes", func() {
+		var meminfoFile string
+		var memstatFile string
+		var memlimitFile string
+		BeforeEach(func() {
+			meminfoFile = procd + "/meminfo"
+			memstatFile = procd + "/memory.stat"
+			memlimitFile = procd + "/memory.limit_in_bytes"
+
+			meminfoContents := `
+MemTotal:       35008180 kB
+MemFree:          487816 kB
+Buffers:          249244 kB
+Cached:          5064684 kB
+`
+			memstatContents := `
+total_rss 14108536832
+swap 290564089
+`
+			memlimitContents := `21390950400`
+
+			err := ioutil.WriteFile(meminfoFile, []byte(meminfoContents), 0444)
+			Expect(err).ToNot(HaveOccurred())
+			err = ioutil.WriteFile(memstatFile, []byte(memstatContents), 0444)
+			Expect(err).ToNot(HaveOccurred())
+			err = ioutil.WriteFile(memlimitFile, []byte(memlimitContents), 0444)
+			Expect(err).ToNot(HaveOccurred())
+		})
+
+		It("returns correct memory info", func() {
+			mem := Mem{}
+			err := mem.Get()
+			Expect(err).ToNot(HaveOccurred())
+
+			Expect(mem.Total).To(BeNumerically("==", 21390950400))
+			Expect(mem.Free).To(BeNumerically("==", 21390950400-14108536832-290564089))
+			Expect(mem.ActualFree).To(BeNumerically("==", 21390950400-14108536832-290564089))
+			Expect(mem.ActualUsed).To(BeNumerically("==", 14108536832+290564089))
+		})
+	})
+
+	Describe("Mem: MemAvailable no. Cgroup limit ok. Cgroup swap no", func() {
+		var meminfoFile string
+		var memstatFile string
+		var memlimitFile string
+		BeforeEach(func() {
+			meminfoFile = procd + "/meminfo"
+			memstatFile = procd + "/memory.stat"
+			memlimitFile = procd + "/memory.limit_in_bytes"
+
+			meminfoContents := `
+MemTotal:       35008180 kB
+MemFree:          487816 kB
+Buffers:          249244 kB
+Cached:          5064684 kB
+`
+			memstatContents := `
+total_rss 14108536832
+`
+			memlimitContents := `21390950400`
+
+			err := ioutil.WriteFile(meminfoFile, []byte(meminfoContents), 0444)
+			Expect(err).ToNot(HaveOccurred())
+			err = ioutil.WriteFile(memstatFile, []byte(memstatContents), 0444)
+			Expect(err).ToNot(HaveOccurred())
+			err = ioutil.WriteFile(memlimitFile, []byte(memlimitContents), 0444)
+			Expect(err).ToNot(HaveOccurred())
+		})
+
+		It("returns correct memory info", func() {
+			mem := Mem{}
+			err := mem.Get()
+			Expect(err).ToNot(HaveOccurred())
+
+			Expect(mem.Total).To(BeNumerically("==", 21390950400))
+			Expect(mem.Free).To(BeNumerically("==", 21390950400-14108536832))
+			Expect(mem.ActualFree).To(BeNumerically("==", 21390950400-14108536832))
+			Expect(mem.ActualUsed).To(BeNumerically("==", 14108536832))
+		})
+	})
+
+	Describe("Mem: MemAvailable no. Cgroup limit nonsense. Cgroup swap yes", func() {
+		var meminfoFile string
+		var memstatFile string
+		var memlimitFile string
+		BeforeEach(func() {
+			meminfoFile = procd + "/meminfo"
+			memstatFile = procd + "/memory.stat"
+			memlimitFile = procd + "/memory.limit_in_bytes"
+
+			meminfoContents := `
+MemTotal:       35008180 kB
+MemFree:          487816 kB
+Buffers:          249244 kB
+Cached:          5064684 kB
+`
+			memstatContents := `
+total_rss 14108536832
+swap 290564089
+`
+			memlimitContents := `213909504000000000000`
+
+			err := ioutil.WriteFile(meminfoFile, []byte(meminfoContents), 0444)
+			Expect(err).ToNot(HaveOccurred())
+			err = ioutil.WriteFile(memstatFile, []byte(memstatContents), 0444)
+			Expect(err).ToNot(HaveOccurred())
+			err = ioutil.WriteFile(memlimitFile, []byte(memlimitContents), 0444)
+			Expect(err).ToNot(HaveOccurred())
+		})
+
+		It("returns correct memory info", func() {
+			mem := Mem{}
+			err := mem.Get()
+			Expect(err).ToNot(HaveOccurred())
+
+			Expect(mem.Total).To(BeNumerically("==", 35008180*1024))
+			Expect(mem.Free).To(BeNumerically("==", 35008180*1024-14108536832-290564089))
+			Expect(mem.ActualFree).To(BeNumerically("==", 35008180*1024-14108536832-290564089))
+			Expect(mem.ActualUsed).To(BeNumerically("==", 14108536832+290564089))
+		})
+	})
+
+	Describe("Mem: MemAvailable no. Cgroup limit nonsense. Cgroup swap no", func() {
+		var meminfoFile string
+		var memstatFile string
+		var memlimitFile string
+		BeforeEach(func() {
+			meminfoFile = procd + "/meminfo"
+			memstatFile = procd + "/memory.stat"
+			memlimitFile = procd + "/memory.limit_in_bytes"
+
+			meminfoContents := `
+MemTotal:       35008180 kB
+MemFree:          487816 kB
+Buffers:          249244 kB
+Cached:          5064684 kB
+`
+			memstatContents := `
+total_rss 14108536832
+`
+			memlimitContents := `213909504000000000000`
+
+			err := ioutil.WriteFile(meminfoFile, []byte(meminfoContents), 0444)
+			Expect(err).ToNot(HaveOccurred())
+			err = ioutil.WriteFile(memstatFile, []byte(memstatContents), 0444)
+			Expect(err).ToNot(HaveOccurred())
+			err = ioutil.WriteFile(memlimitFile, []byte(memlimitContents), 0444)
+			Expect(err).ToNot(HaveOccurred())
+		})
+
+		It("returns correct memory info", func() {
+			mem := Mem{}
+			err := mem.Get()
+			Expect(err).ToNot(HaveOccurred())
+
+			Expect(mem.Total).To(BeNumerically("==", 35008180*1024))
+			Expect(mem.Free).To(BeNumerically("==", 35008180*1024-14108536832))
+			Expect(mem.ActualFree).To(BeNumerically("==", 35008180*1024-14108536832))
+			Expect(mem.ActualUsed).To(BeNumerically("==", 14108536832))
 		})
 	})
 
